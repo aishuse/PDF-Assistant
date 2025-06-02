@@ -11,3 +11,4 @@ fastapi
 uvicorn
 pypdf2
 faiss-cpu
+pypdf
