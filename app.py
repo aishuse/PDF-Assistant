@@ -8,8 +8,9 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 import tempfile
-import os
+import hashlib
 from dotenv import load_dotenv
+import os
 
 os.environ["STREAMLIT_WATCHER_TYPE"] = "none"
 load_dotenv()
@@ -23,29 +24,44 @@ model = ChatGroq(
 
 st.title("PDF QA Assistant")
 
-# File uploader
+def get_file_hash(file_bytes):
+    return hashlib.md5(file_bytes).hexdigest()
+
 uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
 
-if uploaded_file is not None and "retriever" not in st.session_state:
-    with st.spinner("Processing PDF..."):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            tmp_path = tmp_file.name
+if uploaded_file is not None:
+    file_bytes = uploaded_file.read()  # read once and reuse
+    file_hash = get_file_hash(file_bytes)
 
-        loader = PyPDFLoader(tmp_path)
-        docs = loader.load()
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        texts = [doc.page_content for doc in docs]
-        chunks = splitter.create_documents(texts)
-        embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+    # Check if this is a new file
+    if st.session_state.get("last_file_hash") != file_hash:
+        with st.spinner("Processing new PDF..."):
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(file_bytes)
+                tmp_path = tmp_file.name
 
-        st.session_state.retriever = retriever
-        st.session_state.docs = docs
-        st.success("PDF processed and vector index created.")
+            # Load and process
+            loader = PyPDFLoader(tmp_path)
+            docs = loader.load()
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            texts = [doc.page_content for doc in docs]
+            chunks = splitter.create_documents(texts)
 
-if "chain" not in st.session_state and "retriever" in st.session_state:
+            # Create embeddings and retriever
+            embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+            vector_store = FAISS.from_documents(chunks, embeddings)
+            retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+
+            # Store in session
+            st.session_state.retriever = retriever
+            st.session_state.last_file_hash = file_hash
+            st.session_state.chain = None  # reset chain
+
+            st.success("PDF processed and vector store created.")
+
+# Create chain if retriever exists and chain not set
+if st.session_state.get("retriever") and st.session_state.get("chain") is None:
     prompt = PromptTemplate(
         template="""
         You are a helpful assistant.
@@ -70,11 +86,11 @@ if "chain" not in st.session_state and "retriever" in st.session_state:
         'question': RunnablePassthrough()
     })
     chain = parallel_chain | prompt | model | parser
-
     st.session_state.chain = chain
 
-if "chain" in st.session_state:
-    user_question = st.text_input("Enter your question", key="question")
+# Ask a question
+if st.session_state.get("chain"):
+    user_question = st.text_input("Enter your question")
 
     if st.button("Get Answer") and user_question.strip() != "":
         with st.spinner("Thinking..."):
