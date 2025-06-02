@@ -1,0 +1,13 @@
+agno
+langchain-groq
+streamlit
+langchain
+langchain-community
+sentence-transformers
+arxiv
+pdfplumber
+chromadb
+fastapi
+uvicorn
+pypdf2
+faiss-cpu
